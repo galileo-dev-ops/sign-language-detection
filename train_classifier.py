@@ -1,3 +1,6 @@
+## Credit: Computer vision engineer: https://www.youtube.com/@ComputerVisionEngineer
+# Code has been modified by self
+
 import pickle
 
 from sklearn.ensemble import RandomForestClassifier
