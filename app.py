@@ -1,41 +1,200 @@
 import tkinter as tk
-import threading
 import os
 import sys
-
-# Import your scripts
-sys.path.append(os.path.abspath('path_to_your_scripts'))
-import collect_imgs
-import create_dataset
-import train_classifier
-import inference_classifier
+import cv2
+import pickle
+import mediapipe as mp
+import numpy as np
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
 
 
 def collect_images():
-    threading.Thread(target=collect_imgs.main).start()
+    DATA_DIR = './data'
+    if not os.path.exists(DATA_DIR):
+        os.makedirs(DATA_DIR)
+
+    number_of_classes = 3
+    dataset_size = 100
+
+    cap = cv2.VideoCapture(0)
+    for j in range(number_of_classes):
+        if not os.path.exists(os.path.join(DATA_DIR, str(j))):
+            os.makedirs(os.path.join(DATA_DIR, str(j)))
+
+        print('Collecting data for class {}'.format(j))
+
+        done = False
+        while True:
+            ret, frame = cap.read()
+            cv2.putText(frame, 'Ready? Press "Q" ! :)', (100, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.3, (0, 255, 0), 3,
+                        cv2.LINE_AA)
+            cv2.imshow('frame', frame)
+            if cv2.waitKey(25) == ord('q'):
+                break
+
+        counter = 0
+        while counter < dataset_size:
+            ret, frame = cap.read()
+            cv2.imshow('frame', frame)
+            cv2.waitKey(25)
+            cv2.imwrite(os.path.join(DATA_DIR, str(j), '{}.jpg'.format(counter)), frame)
+
+            counter += 1
+
+    cap.release()
+    cv2.destroyAllWindows()
 
 
 def create_dataset():
-    threading.Thread(target=create_dataset.main).start()
+    mp_hands = mp.solutions.hands
+    mp_drawing = mp.solutions.drawing_utils
+    mp_drawing_styles = mp.solutions.drawing_styles
+
+    hands = mp_hands.Hands(static_image_mode=True, min_detection_confidence=0.3)
+
+    DATA_DIR = './data'
+
+    data = []
+    labels = []
+    for dir_ in os.listdir(DATA_DIR):
+        for img_path in os.listdir(os.path.join(DATA_DIR, dir_)):
+            data_aux = []
+
+            x_ = []
+            y_ = []
+
+            img = cv2.imread(os.path.join(DATA_DIR, dir_, img_path))
+            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+            results = hands.process(img_rgb)
+            if results.multi_hand_landmarks:
+                for hand_landmarks in results.multi_hand_landmarks:
+                    for i in range(len(hand_landmarks.landmark)):
+                        x = hand_landmarks.landmark[i].x
+                        y = hand_landmarks.landmark[i].y
+
+                        x_.append(x)
+                        y_.append(y)
+
+                    for i in range(len(hand_landmarks.landmark)):
+                        x = hand_landmarks.landmark[i].x
+                        y = hand_landmarks.landmark[i].y
+                        data_aux.append(x - min(x_))
+                        data_aux.append(y - min(y_))
+
+                data.append(data_aux)
+                labels.append(dir_)
+
+    f = open('data.pickle', 'wb')
+    pickle.dump({'data': data, 'labels': labels}, f)
+    f.close()
 
 
 def train_model():
-    threading.Thread(target=train_classifier.main).start()
+    data_dict = pickle.load(open('./data.pickle', 'rb'))
+
+    data = np.asarray(data_dict['data'])
+    labels = np.asarray(data_dict['labels'])
+
+    x_train, x_test, y_train, y_test = train_test_split(data, labels, test_size=0.2, shuffle=True, stratify=labels)
+
+    model = RandomForestClassifier()
+
+    model.fit(x_train, y_train)
+
+    y_predict = model.predict(x_test)
+
+    score = accuracy_score(y_predict, y_test)
+
+    print('{}% of samples were classified correctly !'.format(score * 100))
+
+    f = open('model.p', 'wb')
+    pickle.dump({'model': model}, f)
+    f.close()
 
 
 def inference():
-    threading.Thread(target=inference_classifier.main).start()
+    model_dict = pickle.load(open('./model.p', 'rb'))
+    model = model_dict['model']
+
+    cap = cv2.VideoCapture(2)
+
+    mp_hands = mp.solutions.hands
+    mp_drawing = mp.solutions.drawing_utils
+    mp_drawing_styles = mp.solutions.drawing_styles
+
+    hands = mp_hands.Hands(static_image_mode=True, min_detection_confidence=0.3)
+
+    labels_dict = {0: 'A', 1: 'B', 2: 'L'}
+    while True:
+
+        data_aux = []
+        x_ = []
+        y_ = []
+
+        ret, frame = cap.read()
+
+        H, W, _ = frame.shape
+
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        results = hands.process(frame_rgb)
+        if results.multi_hand_landmarks:
+            for hand_landmarks in results.multi_hand_landmarks:
+                mp_drawing.draw_landmarks(
+                    frame,  # image to draw
+                    hand_landmarks,  # model output
+                    mp_hands.HAND_CONNECTIONS,  # hand connections
+                    mp_drawing_styles.get_default_hand_landmarks_style(),
+                    mp_drawing_styles.get_default_hand_connections_style())
+
+            for hand_landmarks in results.multi_hand_landmarks:
+                for i in range(len(hand_landmarks.landmark)):
+                    x = hand_landmarks.landmark[i].x
+                    y = hand_landmarks.landmark[i].y
+
+                    x_.append(x)
+                    y_.append(y)
+
+                for i in range(len(hand_landmarks.landmark)):
+                    x = hand_landmarks.landmark[i].x
+                    y = hand_landmarks.landmark[i].y
+                    data_aux.append(x - min(x_))
+                    data_aux.append(y - min(y_))
+
+            x1 = int(min(x_) * W) - 10
+            y1 = int(min(y_) * H) - 10
+
+            x2 = int(max(x_) * W) - 10
+            y2 = int(max(y_) * H) - 10
+
+            prediction = model.predict([np.asarray(data_aux)])
+
+            predicted_character = labels_dict[int(prediction[0])]
+
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 0), 4)
+            cv2.putText(frame, predicted_character, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 1.3, (0, 0, 0), 3,
+                        cv2.LINE_AA)
+
+        cv2.imshow('frame', frame)
+        cv2.waitKey(1)
+
+    cap.release()
+    cv2.destroyAllWindows()
 
 
 # Create the main window
 root = tk.Tk()
 root.title("Hand Gesture Recognition")
+root.geometry("700x700")
 
 # Create buttons
-collect_button = tk.Button(root, text="Collect Images", command=collect_images)
-create_dataset_button = tk.Button(root, text="Create Dataset", command=create_dataset)
-train_model_button = tk.Button(root, text="Train Model", command=train_model)
-inference_button = tk.Button(root, text="Inference", command=inference)
+collect_button = tk.Button(root, text="Collect Images", command=collect_images, height=5)
+create_dataset_button = tk.Button(root, text="Create Dataset", command=create_dataset, height=5)
+train_model_button = tk.Button(root, text="Train Model", command=train_model, height=5)
+inference_button = tk.Button(root, text="Inference", command=inference, height=5)
 
 # Place the buttons
 collect_button.pack(fill=tk.X)
